@@ -1,0 +1,13 @@
+{
+  "name": "claude-model-super-power",
+  "owner": {
+    "name": "Johnny Helder"
+  },
+  "description": "Um maestro para o Claude Code: cada tarefa vai para o modelo certo.",
+  "plugins": [
+    {
+      "name": "model-super-power",
+      "source": "./"
+    }
+  ]
+}
