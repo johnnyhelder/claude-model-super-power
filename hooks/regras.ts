@@ -177,3 +177,16 @@ export function chaveDaSemana(ms: number): string {
   const segunda = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dia))
   return `semana:${segunda.toISOString().slice(0, 10)}`
 }
+
+// Modelo com que um subagente vai arrancar, antes de arrancar: o da tabela, o da orquestra,
+// o que quem chamou pediu, ou o da conversa. Serve só para mostrar na linha da tarefa.
+export function modeloPrevisto(p: Pedido & { parentModel: string }, roteado: string | undefined): string {
+  const daOrquestra = ORQUESTRA.find(o => `model-super-power:${o.papel}` === p.subagentType)?.modelo
+  return roteado ?? p.model ?? daOrquestra ?? p.parentModel
+}
+
+// Põe o modelo à frente da descrição da tarefa ("Sonnet 4.6 · Segunda opinião sobre...").
+export function comModelo(descricao: string, modelo: string): string {
+  const nome = familia(modelo)
+  return descricao.startsWith(`${nome} · `) ? descricao : `${nome} · ${descricao}`
+}

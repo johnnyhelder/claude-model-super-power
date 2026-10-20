@@ -10,11 +10,13 @@ import {
   PROTEGIDOS,
   ROTEAMENTO,
   chaveDaSemana,
+  comModelo,
   compacto,
   completas,
   familia,
   mensagemDeRecusa,
   modeloPara,
+  modeloPrevisto,
   porModelo,
   protegidoEm,
   regrasExtra,
@@ -79,7 +81,8 @@ export const register: Register = (on, options) => {
   // Todo subagente que arranca (da tabela, da orquestra ou outro) entra nas contas com o seu papel.
   on('agent.spawn', async ($, e, next) => {
     const modelo = (await estaLigado($)) ? modeloPara(e) : undefined
-    const r = await next(modelo === undefined ? e : { ...e, model: modelo })
+    const description = comModelo(e.description, modeloPrevisto(e, modelo))
+    const r = await next(modelo === undefined ? { ...e, description } : { ...e, model: modelo, description })
     const id = r.deny === undefined ? r.agentId : undefined
     if (id !== undefined) {
       try {

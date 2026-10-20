@@ -5,7 +5,9 @@ import {
   chaveDaSemana,
   completas,
   familia,
+  comModelo,
   modeloPara,
+  modeloPrevisto,
   porModelo,
   PROTEGIDOS,
   protegidoEm,
@@ -85,4 +87,13 @@ test('contas por modelo: nome curto, novo vs releitura e percentagem', () => {
   ])
   expect(linhas[0]?.linha).toEqual({ novo: 100, releitura: 700, pedidos: 1 })
   expect(completas({ delegados: 3 } as never)).toEqual(CONTAS_VAZIAS)
+})
+
+test('linha da tarefa mostra o modelo', () => {
+  const base = { fork: false, parentModel: 'claude-opus-5-5' }
+  expect(modeloPrevisto({ ...base, subagentType: 'model-super-power:segunda-opiniao' }, undefined)).toBe('claude-sonnet-4-6')
+  expect(modeloPrevisto({ ...base, subagentType: 'Explore' }, 'haiku')).toBe('haiku')
+  expect(modeloPrevisto({ ...base, subagentType: 'Plan' }, undefined)).toBe('claude-opus-5-5')
+  expect(comModelo('Segunda opinião sobre roteiro', 'claude-sonnet-4-6')).toBe('Sonnet 4.6 · Segunda opinião sobre roteiro')
+  expect(comModelo('Sonnet 4.6 · Já tem', 'claude-sonnet-4-6')).toBe('Sonnet 4.6 · Já tem')
 })
