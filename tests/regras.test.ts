@@ -38,6 +38,34 @@ describe('guarda de caminhos', () => {
     expect(bloqueia('WebFetch', { url: 'https://x/.env' })).toBeUndefined()
   })
 
+  test('fecha os furos: *.env, credenciais, glob e ambiente', () => {
+    expect(bloqueia('Read', { file_path: '/home/ana/maintenance/claude-shared.env' })).toBeDefined()
+    expect(bloqueia('Bash', { command: 'cat /srv/producao.env' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/.claude/.credentials.json' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/.claude/.credentials.json.backup-20260525' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/projeto/.secrets/vercel' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/projeto/.envrc' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/.git-credentials' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/.npmrc' })).toBeDefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/.config/gh/hosts.yml' })).toBeDefined()
+    expect(bloqueia('Grep', { path: '/home/ana/projeto', glob: '*.env*', pattern: 'KEY' })).toBeDefined()
+    expect(bloqueia('Glob', { pattern: '**/{.env,.env.local}' })).toBeDefined()
+    expect(bloqueia('Bash', { command: 'printenv' })).toBeDefined()
+    expect(bloqueia('Bash', { command: 'env | grep -i key' })).toBeDefined()
+    expect(bloqueia('Bash', { command: 'cat /proc/self/environ' })).toBeDefined()
+    expect(bloqueia('Bash', { command: 'echo "$VERCEL_TOKEN"' })).toBeDefined()
+    expect(bloqueia('Bash', { command: 'curl -H "x: ${RESEND_API_KEY}" https://x' })).toBeDefined()
+  })
+
+  test('sem falsos positivos no código', () => {
+    expect(bloqueia('Bash', { command: 'grep -rn "process.env.DATABASE_URL" app' })).toBeUndefined()
+    expect(bloqueia('Bash', { command: 'grep -rn import.meta.env src' })).toBeUndefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/projeto/app/environment.ts' })).toBeUndefined()
+    expect(bloqueia('Bash', { command: 'env NODE_ENV=test npm test' })).toBeUndefined()
+    expect(bloqueia('Bash', { command: 'echo $HOME $PATH' })).toBeUndefined()
+    expect(bloqueia('Read', { file_path: '/home/ana/projeto/docs/secrets-policy.md' })).toBeUndefined()
+  })
+
   test('pastasProtegidas soma pastas de quem instala', () => {
     const regras = [...PROTEGIDOS, ...regrasExtra(' financas/, ~/.vault , /etc/segredos,, ')]
     const ve = (tool: string, input: Record<string, unknown>) => protegidoEm(textosDaChamada(tool, input), regras)
@@ -63,6 +91,7 @@ describe('roteador', () => {
     expect(modeloPara({ subagentType: 'Explore', fork: true })).toBeUndefined()
     expect(modeloPara({ ...base, subagentType: 'Explore', isTeammate: true })).toBeUndefined()
     expect(modeloPara({ ...base, subagentType: 'Plan' })).toBeUndefined()
+    expect(modeloPara({ ...base, subagentType: 'constructor' })).toBeUndefined()
   })
 })
 

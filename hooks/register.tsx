@@ -35,10 +35,18 @@ async function estaLigado($: EngineInterface): Promise<boolean> {
   return (await $.store.get('ligado')) !== false
 }
 
-async function somarSemana($: EngineInterface, fn: (c: Contas) => Contas): Promise<void> {
-  const chave = chaveDaSemana(await $.clock.now())
-  const atual = completas((await $.store.get(chave)) as Contas | undefined)
-  await $.store.set(chave, fn(atual))
+// O $.store não tem escrita atómica: subagentes em paralelo que acabam juntos liam o mesmo
+// valor e um apagava a soma do outro. Uma fila por processo faz as escritas uma de cada vez.
+let filaDaSemana: Promise<void> = Promise.resolve()
+
+function somarSemana($: EngineInterface, fn: (c: Contas) => Contas): Promise<void> {
+  const vez = filaDaSemana.then(async () => {
+    const chave = chaveDaSemana(await $.clock.now())
+    const atual = completas((await $.store.get(chave)) as Contas | undefined)
+    await $.store.set(chave, fn(atual))
+  })
+  filaDaSemana = vez.catch(() => undefined)
+  return vez
 }
 
 // Modelo do último pedido de cada loop ("principal" = a conversa), lido em turn.step.

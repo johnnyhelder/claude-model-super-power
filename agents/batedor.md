@@ -1,7 +1,7 @@
 ---
 name: batedor
 description: "Haiku 5.5. Busca rápida e leitura em volume: achar arquivos, ler logs, listar ocorrências, juntar trechos. Usar sempre que a tarefa for só encontrar ou ler, sem decidir nada. É o mais barato da orquestra."
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob
 model: claude-haiku-5-5
 effort: low
 ---

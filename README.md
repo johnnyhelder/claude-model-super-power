@@ -45,7 +45,7 @@ Olhe para a coluna **novo**. É o trabalho de verdade. A **releitura do cache** 
 
 ## Pastas fechadas aos subagentes
 
-Nenhum subagente pode ler, procurar ou mexer em `.env*`, `keys.env`, `secrets/`, `~/.ssh`, chaves SSH privadas, arquivos `.pem`, `~/.aws/credentials` e `.netrc`. A recusa explica o motivo e manda devolver a tarefa ao maestro. A conversa principal não é travada, porque às vezes precisa mesmo desses arquivos e você está vendo.
+Nenhum subagente pode ler, procurar ou mexer em `.env*` (e `*.env`, `.envrc`), `keys.env`, `secrets/` e `.secrets/`, as credenciais do próprio Claude Code (`.credentials.json`), `~/.ssh`, chaves SSH privadas, arquivos `.pem`, `~/.aws/credentials`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `.pgpass`, `~/.gnupg`, `~/.kube`, `~/.docker/config.json` e `gh/hosts.yml`. No Bash, também ficam fechados os comandos que despejam o ambiente (`printenv`, `env` sozinho, `/proc/*/environ`) e as variáveis com `TOKEN`, `KEY`, `SECRET` ou `PASSWORD` no nome. A recusa explica o motivo e manda devolver a tarefa ao maestro. A conversa principal não é travada, porque às vezes precisa mesmo desses arquivos e você está vendo.
 
 Para fechar mais pastas, use a opção `pastasProtegidas` (lista separada por vírgulas), por exemplo `financas, ~/.vault, /etc/segredos`. No Claude Code ela aparece em `/config`. Num plugin carregado com `--plugin-dir`, ponha em `~/.claude/settings.json`.
 
@@ -57,7 +57,9 @@ Para fechar mais pastas, use a opção `pastasProtegidas` (lista separada por v�
 }
 ```
 
-Num comando de terminal a guarda procura o caminho escrito por extenso. Um caminho guardado numa variável passa. É uma rede de segurança, não um cofre.
+Num comando de terminal a guarda procura o caminho escrito por extenso. Um caminho guardado numa variável ou disfarçado com glob (`cat .en?`) passa. É uma rede de segurança, não um cofre.
+
+O `batedor` não tem Bash. É o modelo mais barato e o que mais lê conteúdo de fora (logs, páginas, arquivos de terceiros), por isso é o mais exposto a injeção de instruções; com Read, Grep e Glob ele procura e lê tudo o que precisa.
 
 ## O comando `/super-power`
 
@@ -125,7 +127,7 @@ Claude Code uses the same expensive model for everything, even to find a file. T
 
 **A real test.** One request (find a bug, choose the fix, write the patch, get a second opinion, review) made all five musicians play. Opus 5.5 did 131k new tokens as conductor and reviewer, Sonnet 5.5 did 180k as executor, Sonnet 4.6 did 48k, Haiku 5.5 did 52k and Fable 5.1 did 56k. "New" is real work. "Cache reread" is the model rereading the conversation, at a fraction of the normal price.
 
-**Folders closed to subagents.** `.env*`, `keys.env`, `secrets/`, `~/.ssh`, private SSH keys, `.pem` files, `~/.aws/credentials` and `.netrc`. Add your own with the `pastasProtegidas` option (comma separated), shown in `/config` or set under `pluginConfigs` in `~/.claude/settings.json` for a `--plugin-dir` plugin. In shell commands the guard matches paths written out in full, so it is a safety net, not a vault.
+**Folders closed to subagents.** `.env*` (plus `*.env` and `.envrc`), `keys.env`, `secrets/` and `.secrets/`, Claude Code's own `.credentials.json`, `~/.ssh`, private SSH keys, `.pem` files, `~/.aws/credentials`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `.pgpass`, `~/.gnupg`, `~/.kube`, `~/.docker/config.json` and `gh/hosts.yml`. In the shell, commands that dump the environment (`printenv`, bare `env`, `/proc/*/environ`) and variables named with `TOKEN`, `KEY`, `SECRET` or `PASSWORD` are closed too. Add your own with the `pastasProtegidas` option (comma separated), shown in `/config` or set under `pluginConfigs` in `~/.claude/settings.json` for a `--plugin-dir` plugin. In shell commands the guard matches paths written out in full (a path in a variable or a glob like `cat .en?` gets through), so it is a safety net, not a vault. The `batedor` has no Bash: it is the cheapest model and reads the most outside content, so it is the most exposed to prompt injection.
 
 **Commands.** `/super-power` shows status and per model usage for the session and the week. `on` / `off` toggles routing, `regras` lists the rules, `zerar` resets the counters, `mostrar` brings back the ⚓ bar.
 

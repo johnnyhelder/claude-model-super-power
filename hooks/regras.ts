@@ -22,15 +22,27 @@ export const ESFORCO_DELEGADO = 'low' as const
 
 // Pastas e arquivos que nenhum subagente pode tocar. Cada regra tem um nome para a
 // mensagem de recusa. Conservador de propósito: na dúvida, recusa.
-const LIMITE = `(?:^|[\\s/'"=:;|&(<>~])`
-const FIM = `(?:$|[\\s/'"=:;|&)<>*])`
+// Inclui os caracteres de glob e de chaves (* ? [ ] { } ,) para `**/{.env,x}` ou `*.env*` não passarem.
+const LIMITE = `(?:^|[\\s/'"=:;|&(<>~*?{},\\[\\]\`])`
+const FIM = `(?:$|[\\s/'"=:;|&)<>*?{},\\[\\]\`])`
 
 export type Regra = { nome: string; regex: RegExp }
 
 export const PROTEGIDOS: ReadonlyArray<Regra> = [
-  { nome: '.env (chaves)', regex: new RegExp(`${LIMITE}\\.env(?:\\.[\\w.-]+)?${FIM}`) },
+  // `.env`, `.env.local`, e também `producao.env` / `claude-shared.env` (mas não `process.env` nem `import.meta.env`).
+  { nome: '.env (chaves)', regex: new RegExp(`${LIMITE}(?:(?!process\\.env|meta\\.env)[\\w-]+\\.env|\\.env(?:\\.[\\w.-]+)?)${FIM}`) },
+  { nome: '.envrc (chaves)', regex: new RegExp(`${LIMITE}\\.envrc${FIM}`) },
   { nome: 'keys.env (chaves)', regex: /keys\.env\b/ },
-  { nome: 'secrets/ (chaves)', regex: new RegExp(`${LIMITE}secrets${FIM}`) },
+  { nome: 'secrets/ (chaves)', regex: new RegExp(`${LIMITE}\\.?secrets${FIM}`) },
+  { nome: 'credenciais do Claude Code', regex: /\.credentials\.json/ },
+  {
+    nome: 'arquivo de credenciais',
+    regex: new RegExp(`${LIMITE}(?:\\.git-credentials|\\.npmrc|\\.pypirc|\\.pgpass|\\.gnupg|\\.kube|\\.docker/config\\.json|gh/hosts\\.yml)${FIM}`),
+  },
+  // Chaves também vivem no ambiente do shell: `printenv`, `env` sozinho, `echo $VERCEL_TOKEN`.
+  { nome: 'variáveis de ambiente (chaves)', regex: /\bprintenv\b|\/proc\/[\w-]+\/environ\b|\bexport\s+-p\b|\bdeclare\s+-[px]\b|\bcompgen\s+-e\b/ },
+  { nome: 'variáveis de ambiente (chaves)', regex: /(?:^|[;&|(]\s*)env\s*(?:$|[;&|)>])/ },
+  { nome: 'variáveis de ambiente (chaves)', regex: /\$\{?[A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIALS?)\b/ },
   { nome: '~/.ssh (chaves SSH)', regex: new RegExp(`${LIMITE}\\.ssh${FIM}`) },
   { nome: 'chave SSH privada', regex: /\bid_(?:rsa|ed25519|ecdsa|dsa)\b/ },
   { nome: 'arquivo .pem (chave)', regex: /\.pem\b/ },
@@ -99,7 +111,7 @@ export type Pedido = {
 export function modeloPara(p: Pedido): string | undefined {
   if (p.fork || p.isTeammate || p.workflow !== undefined || p.resume !== undefined) return undefined
   if (p.model !== undefined) return undefined // quem chamou escolheu: respeitar
-  return ROTEAMENTO[p.subagentType]
+  return Object.hasOwn(ROTEAMENTO, p.subagentType) ? ROTEAMENTO[p.subagentType] : undefined
 }
 
 // Contas de tokens, por modelo (Opus, Sonnet, Haiku, Fable...). "novo" é o que o modelo
