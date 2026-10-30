@@ -3,26 +3,39 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Contas, Delegado } from '../types'
 import {
+  AVISO_LEITURAS,
+  AVISO_PASSOS,
   CONTAS_VAZIAS,
   ESFORCO_DELEGADO,
   FERRAMENTAS_VIGIADAS,
   ORQUESTRA,
   PROTEGIDOS,
   ROTEAMENTO,
+  TEXTO_MAESTRO,
+  TRAVA_LEITURAS,
+  avisoLeituras,
+  avisoPassos,
   chaveDaSemana,
   comModelo,
   compacto,
   completas,
+  custoUsd,
   familia,
+  leituraDireta,
+  maisUmaLeitura,
   mensagemDeRecusa,
+  modeloCaro,
   modeloPara,
   modeloPrevisto,
   porModelo,
   protegidoEm,
+  recusaLeitura,
   regrasExtra,
   somar,
   textosDaChamada,
+  usd,
 } from './regras'
+import type { Modo } from './regras'
 
 const PLUGIN = 'model-super-power'
 
@@ -47,6 +60,25 @@ function somarSemana($: EngineInterface, fn: (c: Contas) => Contas): Promise<voi
   })
   filaDaSemana = vez.catch(() => undefined)
   return vez
+}
+
+// Maestro obrigatório: só vale em sessão com gente no prompt. `leituras` e `passos` contam o que a
+// conversa principal fez desde o último prompt do usuário ou desde a última delegação.
+let interativa = false
+let leituras = 0
+let passos = 0
+// Se a sessão tem a ferramenta Agent (undefined até o prompt.compose correr) e as leituras
+// ainda não gravadas na semana (a soma vai de uma vez no fim do turno da conversa principal).
+let temAgent: boolean | undefined
+let leiturasSemana = 0
+
+const MODOS: readonly Modo[] = ['aviso', 'forte', 'desligado']
+
+// /super-power modo ganha da opção maestro; /super-power off desliga tudo.
+async function modoEfetivo($: EngineInterface, opcao: unknown): Promise<Modo> {
+  if (!(await estaLigado($))) return 'desligado'
+  const m = (await $.store.get('modo')) ?? opcao ?? 'aviso'
+  return MODOS.find(x => x === m) ?? 'aviso'
 }
 
 // Modelo do último pedido de cada loop ("principal" = a conversa), lido em turn.step.
@@ -78,7 +110,12 @@ function blocoDeContas(titulo: string, c: Contas): string[] {
       `  ${x.nome.padEnd(11)} ${compacto(x.total).padStart(5)}  ${String(x.pct).padStart(3)}%  ${papel(x.nome)}` +
       (x.total > 0 ? `  (novo ${compacto(x.linha.novo)}, releitura do cache ${compacto(x.linha.releitura)})` : ''),
   )
-  return [`${titulo} · ${c.delegados} tarefas delegadas`, ...linhas]
+  return [
+    `${titulo} · ${c.delegados} tarefas delegadas`,
+    ...linhas,
+    `  A preço de API: ${usd(custoUsd(c))}`,
+    `  Leituras diretas: ${c.leituras ?? 0}`,
+  ]
 }
 
 export const register: Register = (on, options) => {
@@ -118,12 +155,56 @@ export const register: Register = (on, options) => {
     return yield* next(ehDelegado ? { ...e, effort: ESFORCO_DELEGADO } : e)
   })
 
-  // 3. Guarda de caminhos, só dentro de subagentes.
+  // 2b. Maestro obrigatório: a seção entra no system prompt de sessões interativas (não em -p,
+  // bare, teammates nem análises de contexto). Nunca quebra o prompt: em erro, segue como veio.
+  on('prompt.compose', async ($, e, next) => {
+    const r = await next(e)
+    const fora = ['print', 'bare', 'teammate', 'analysis'].some(t => e.traits.some(x => x === t))
+    if (!fora) temAgent = e.tools.includes('Agent')
+    if (fora || !interativa || !e.tools.includes('Agent') || !modeloCaro(e.model) || (await modoEfetivo($, options.maestro)) === 'desligado') return r
+    return { sections: [...r.sections, { id: 'model-super-power:maestro', text: TEXTO_MAESTRO, scope: 'session' as const }] }
+  }).catch(($, e, next) => next(e))
+
+  // Um prompt real do usuário recomeça a contagem do maestro (não as mensagens internas nem os comandos).
+  on('prompt.submit', ($, e, next) => {
+    if (['composer', 'bridge', 'scheduled-trigger'].includes(e.origin.kind)) {
+      leituras = 0
+      passos = 0
+    }
+    return next(e)
+  })
+
+  // 3. Guarda de caminhos, só dentro de subagentes. Na conversa principal, o maestro obrigatório.
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
-    if (e.agentId === undefined || !FERRAMENTAS_VIGIADAS.includes(tool)) return next(e)
-
     const input = e as unknown as Readonly<Record<string, unknown>>
+
+    if (e.agentId === undefined) {
+      // Tudo até `n` é síncrono: chamadas em paralelo chegam aqui em ordem, antes de qualquer await.
+      const modelo = modeloDoLoop.get('principal')
+      if (!interativa || temAgent === false || !modeloCaro(modelo)) return next(e)
+      if (tool === 'Agent') {
+        leituras = 0
+        passos = 0
+        return next(e)
+      }
+      passos++
+      const conta = leituraDireta(tool, input) && protegidoEm(textosDaChamada(tool, input), regras) === undefined
+      const n = conta ? ++leituras : leituras
+      const modo = await modoEfetivo($, options.maestro)
+      if (modo === 'desligado') return next(e)
+      if (conta && n >= TRAVA_LEITURAS && modo === 'forte') return { deny: recusaLeitura(n) }
+      if (conta) {
+        leiturasSemana++
+        await update($, contas, c => maisUmaLeitura(completas(c)))
+      }
+      const r = await next(e)
+      if (r.deny !== undefined) return r
+      const aviso = conta && n >= AVISO_LEITURAS ? avisoLeituras(n) : passos % AVISO_PASSOS === 0 ? avisoPassos(passos) : undefined
+      return aviso === undefined ? r : { ...r, context: [...(r.context ?? []), aviso] }
+    }
+    if (!FERRAMENTAS_VIGIADAS.includes(tool)) return next(e)
+
     let nome = protegidoEm(textosDaChamada(tool, input), regras)
 
     // Um atalho (symlink) pode esconder uma pasta protegida: olhar também o caminho real.
@@ -135,7 +216,10 @@ export const register: Register = (on, options) => {
 
     return nome === undefined ? next(e) : { deny: mensagemDeRecusa(nome) }
   }).catch(($, e, next) =>
-    next.called ? next(e) : { deny: `${PLUGIN}: a guarda de caminhos falhou, chamada recusada por segurança.` },
+    // O mod nunca trava a conversa principal por erro próprio; nos subagentes, na dúvida, recusa.
+    next.called || e.agentId === undefined
+      ? next(e)
+      : { deny: `${PLUGIN}: a guarda de caminhos falhou, chamada recusada por segurança.` },
   )
 
   // 4. Contas por modelo: o que correu em cada pedido (conversa e subagentes).
@@ -144,18 +228,25 @@ export const register: Register = (on, options) => {
     if (uso !== undefined) {
       const delegado = (await read($, delegados)).find(d => d.id === e.agentId)?.modelo
       const nome = familia(modeloDoLoop.get(e.agentId ?? 'principal') ?? delegado)
-      await update($, contas, c => somar(completas(c), nome, uso))
-      await somarSemana($, c => somar(c, nome, uso))
+      const principal = e.agentId === undefined
+      await update($, contas, c => somar(completas(c), nome, uso, principal))
+      await somarSemana($, c => somar(c, nome, uso, principal))
+    }
+    if (e.agentId === undefined && leiturasSemana > 0) {
+      const k = leiturasSemana
+      leiturasSemana = 0
+      await somarSemana($, c => ({ ...c, leituras: (c.leituras ?? 0) + k }))
     }
     return next(e)
   })
 
   // 5. Comando /super-power.
   on('session.start', async ($, e, next) => {
+    interativa = e.isInteractive
     await $.command.register({
       name: 'super-power',
-      description: 'model-super-power: estado, contas, regras, on/off',
-      argumentHint: '[on|off|regras|mostrar|zerar]',
+      description: 'model-super-power: estado, contas, regras, modo, on/off',
+      argumentHint: '[on|off|modo aviso|forte|desligado|regras|mostrar|zerar]',
     })
     return next(e)
   })
@@ -166,6 +257,18 @@ export const register: Register = (on, options) => {
     if (arg === 'on' || arg === 'off') {
       await $.store.set('ligado', arg === 'on')
       return { text: arg === 'on' ? 'Ligado: subagentes de leitura vão para o Haiku.' : 'Desligado: nada é roteado.' }
+    }
+
+    if (arg.startsWith('modo ')) {
+      const modo = MODOS.find(m => m === arg.slice(5).trim())
+      if (modo === undefined) return { text: 'Use /super-power modo aviso|forte|desligado.' }
+      await $.store.set('modo', modo)
+      const o = {
+        aviso: 'aviso: a conversa principal recebe o lembrete de delegar.',
+        forte: `forte: além do lembrete, a ${TRAVA_LEITURAS}ª leitura direta seguida é recusada até delegar.`,
+        desligado: 'desligado: o maestro não interfere.',
+      }
+      return { text: `Maestro em modo ${o[modo]}` }
     }
 
     if (arg === 'regras') {
@@ -197,13 +300,15 @@ export const register: Register = (on, options) => {
     return {
       text: [
         ligado ? 'ligado' : 'desligado',
+        `Maestro: ${await modoEfetivo($, options.maestro)}`,
         '',
         ...blocoDeContas('Esta sessão', completas(await read($, contas))),
         '',
         ...blocoDeContas('Esta semana', semana),
         '',
         'Releitura do cache = o modelo relendo a conversa; custa uma fração do preço normal.',
-        'Use /super-power on|off|regras|mostrar|zerar',
+        'A preço de API é uma estimativa com o preço base e escrita de cache de 1 hora na conversa principal e de 5 min nos subagentes, não o que a assinatura cobra.',
+        'Use /super-power on|off|modo|regras|mostrar|zerar',
       ].join('\n'),
     }
   })
@@ -211,14 +316,15 @@ export const register: Register = (on, options) => {
   // 6. Barra discreta acima do prompt.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const c = completas(await read($, contas))
-    const calado = e.props.hasSurvey || c.delegados === 0 || (await read($, oculto)) || !(await estaLigado($))
+    const calado = e.props.hasSurvey || (c.delegados === 0 && (c.leituras ?? 0) === 0) || (await read($, oculto)) || !(await estaLigado($))
     if (calado) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
     return (
       <Box>
         <Text dimColor>
-          ⚓ {porModelo(c).map(x => `${x.nome} ${x.pct}%`).join(' · ')} · {c.delegados} delegadas{' '}
+          ⚓ {porModelo(c).map(x => `${x.nome} ${x.pct}%`).join(' · ')} · {c.delegados} delegadas · {usd(custoUsd(c))}
+          {(c.leituras ?? 0) > 0 ? ` · ${c.leituras} leituras diretas` : ''}{' '}
         </Text>
         <Button key="esconder" label="Esconder" onPress={() => update($, oculto, () => true)} />
       </Box>

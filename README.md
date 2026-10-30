@@ -43,6 +43,22 @@ Esta sessão · 6 tarefas delegadas
 
 Olhe para a coluna **novo**. É o trabalho de verdade. A **releitura do cache** é o modelo relendo a conversa, e custa uma fração do preço normal. Neste teste, quem fez mais trabalho novo foi o Sonnet 5.5 (180k), não o Opus (131k). O modelo caro coordenou e o pesado ficou com os mais baratos.
 
+## Maestro obrigatório
+
+Delegar era opcional, e o modelo caro acabava fazendo tudo sozinho. Cada passo na conversa principal relê o contexto inteiro, então ler dez arquivos ali custa muito mais do que parece. Desde a 1.1.0, em sessões interativas, o mod põe no system prompt uma seção que diz à conversa principal que ela é o maestro: busca e leitura vão para o `batedor`, trabalho decidido para o `executor`, revisão para o `segunda-opiniao` e o `revisor`.
+
+Ele também conta o que a conversa principal faz sozinha desde o seu último prompt ou desde a última delegação. Leituras diretas (Read, Grep, Glob e Bash com `cat`, `grep`, `find`, `ls` e parecidos) recebem um lembrete a partir da 3ª, e a cada 10 passos sem delegar vem outro. Arquivos protegidos não entram na conta, porque subagentes não podem ler esses.
+
+| Modo | O que faz |
+|---|---|
+| `aviso` (padrão) | Só lembra, sem recusar nada |
+| `forte` | Além do lembrete, recusa a 6ª leitura direta seguida até o maestro delegar |
+| `desligado` | Não interfere |
+
+Escolha em `/config` (opção `maestro`) ou na sessão com `/super-power modo forte`; o `/super-power modo` vence a opção do `/config`. O maestro só atua quando a conversa principal roda em Opus ou Fable, e só em sessão com a ferramenta Agent. Não vale em `-p`, no SDK, em teammates nem em análises de contexto. Se o mod falhar, a conversa principal nunca é travada.
+
+O `/super-power` e a barra passam a mostrar `A preço de API` e as leituras diretas. É uma estimativa com o preço base de cada modelo e a escrita de cache de 1 hora na conversa principal e de 5 minutos nos subagentes, não o que a sua assinatura cobra. Modelos sem preço conhecido ficam de fora da soma, e dados gravados antes da 1.1.0 subestimam o valor.
+
 ## Pastas fechadas aos subagentes
 
 Nenhum subagente pode ler, procurar ou mexer em `.env*` (e `*.env`, `.envrc`), `keys.env`, `secrets/` e `.secrets/`, as credenciais do próprio Claude Code (`.credentials.json`), `~/.ssh`, chaves SSH privadas, arquivos `.pem`, `~/.aws/credentials`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `.pgpass`, `~/.gnupg`, `~/.kube`, `~/.docker/config.json` e `gh/hosts.yml`. No Bash, também ficam fechados os comandos que despejam o ambiente (`printenv`, `env` sozinho, `/proc/*/environ`) e as variáveis com `TOKEN`, `KEY`, `SECRET` ou `PASSWORD` no nome. A recusa explica o motivo e manda devolver a tarefa ao maestro. A conversa principal não é travada, porque às vezes precisa mesmo desses arquivos e você está vendo.
@@ -67,6 +83,7 @@ O `batedor` não tem Bash. É o modelo mais barato e o que mais lê conteúdo de
 |---|---|
 | `/super-power` | Estado e contas da sessão e da semana, por modelo |
 | `/super-power off` / `on` | Desliga ou liga o roteamento |
+| `/super-power modo aviso\|forte\|desligado` | Muda o rigor do maestro obrigatório |
 | `/super-power regras` | Mostra o roteamento e as pastas fechadas |
 | `/super-power zerar` | Zera as contas |
 | `/super-power mostrar` | Volta a mostrar a barra ⚓ escondida |
@@ -122,6 +139,8 @@ Claude Code uses the same expensive model for everything, even to find a file. T
 > Independent project. Not affiliated with Anthropic or with `obra/superpowers`.
 
 **The orchestra.** `batedor` (scout, Haiku 5.5) searches and reads fast. `executor` (Sonnet 5.5) does work that is already decided. `segunda-opiniao` (second opinion, Sonnet 4.6) gives an independent look from a different model. `revisor` (reviewer, Opus 5.5) does the critical review before delivery. `arquiteto` (architect, Fable 5.1) handles hard decisions where mistakes are expensive, and its description asks the conductor to use it sparingly. Claude Code's own subagents are routed too. `Explore` goes to Haiku with low effort, `general-purpose` goes to Sonnet, everything else stays on the conversation's model.
+
+**Mandatory conductor (1.1.0).** In interactive sessions the mod adds a system prompt section telling the main conversation it is the conductor: search and reading go to `batedor`, decided work to `executor`, review to `segunda-opiniao` and `revisor`. It counts direct reads (Read, Grep, Glob, and Bash `cat`, `grep`, `find`, `ls` and the like) since your last prompt or the last delegation, and reminds the model from the 3rd read and every 10 steps. Protected files are not counted. Three modes, set in `/config` (`maestro`) or with `/super-power modo` (the command beats the `/config` option). The conductor only acts when the main conversation runs on Opus or Fable. `aviso` (default) only reminds, `forte` also refuses the 6th direct read in a row until the model delegates, `desligado` does nothing. It does not apply to `-p`, the SDK or teammates, and an error in the mod never blocks the main conversation. `/super-power` and the bar also show a cost estimate at API prices (base price, 1 hour cache writes in the main conversation and 5 minute ones in subagents), not what a subscription charges. Models without a known price are left out of the sum and data saved before 1.1.0 undercounts.
 
 **The main conversation is never changed.** Switching models mid conversation means rereading the whole history without cache, which costs more than it saves. The savings live in subagents, which start with a clean context.
 

@@ -1,6 +1,6 @@
 {
   "name": "model-super-power",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Um maestro para o Claude Code. Cada tarefa vai para o modelo certo (Haiku, Sonnet, Opus, Fable), as pastas sensíveis ficam fechadas aos subagentes e você vê quanto cada modelo trabalhou.",
   "types": "./types/index.d.ts",
   "author": {
@@ -10,6 +10,13 @@
   "repository": "https://github.com/johnnyhelder/claude-model-super-power",
   "license": "MIT",
   "userConfig": {
+    "maestro": {
+      "type": "string",
+      "title": "Maestro obrigatório",
+      "description": "Como a conversa principal é empurrada a delegar. aviso: lembra a cada leitura direta. forte: além disso recusa a 6ª leitura direta seguida até delegar. desligado: não interfere. Só vale em sessões interativas.",
+      "options": ["aviso", "forte", "desligado"],
+      "default": "aviso"
+    },
     "pastasProtegidas": {
       "type": "string",
       "title": "Pastas protegidas extra",

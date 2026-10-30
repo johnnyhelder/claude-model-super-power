@@ -3,6 +3,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   CONTAS_VAZIAS,
   chaveDaSemana,
+  custoUsd,
+  leituraDireta,
   completas,
   familia,
   comModelo,
@@ -19,7 +21,7 @@ import {
 describe('guarda de caminhos', () => {
   const bloqueia = (tool: string, input: Record<string, unknown>) => protegidoEm(textosDaChamada(tool, input))
 
-  test('recusa pastas e ficheiros sensíveis', () => {
+  test('recusa pastas e arquivos sensíveis', () => {
     expect(bloqueia('Read', { file_path: '/home/ana/projeto/.env.local' })).toBeDefined()
     expect(bloqueia('Read', { file_path: '/home/x/.ssh/id_ed25519' })).toBeDefined()
     expect(bloqueia('Glob', { pattern: '**/*.pem' })).toBeDefined()
@@ -114,7 +116,7 @@ test('contas por modelo: nome curto, novo vs releitura e percentagem', () => {
   expect(linhas.map(l => [l.nome, l.pct])).toEqual([
     ['Opus 5.5', 80], ['Haiku 5.5', 20], ['Sonnet 5.5', 0], ['Sonnet 4.6', 0], ['Fable 5.1', 0],
   ])
-  expect(linhas[0]?.linha).toEqual({ novo: 100, releitura: 700, pedidos: 1 })
+  expect(linhas[0]?.linha).toEqual({ novo: 100, releitura: 700, pedidos: 1, entrada: 100, saida: 0, escrita: 0, escrita1h: 0 })
   expect(completas({ delegados: 3 } as never)).toEqual(CONTAS_VAZIAS)
 })
 
@@ -125,4 +127,71 @@ test('linha da tarefa mostra o modelo', () => {
   expect(modeloPrevisto({ ...base, subagentType: 'Plan' }, undefined)).toBe('claude-opus-5-5')
   expect(comModelo('Segunda opinião sobre roteiro', 'claude-sonnet-4-6')).toBe('Sonnet 4.6 · Segunda opinião sobre roteiro')
   expect(comModelo('Sonnet 4.6 · Já tem', 'claude-sonnet-4-6')).toBe('Sonnet 4.6 · Já tem')
+})
+
+describe('maestro obrigatório', () => {
+  test('leituraDireta reconhece leitura e procura', () => {
+    expect(leituraDireta('Read', { file_path: '/x' })).toBe(true)
+    expect(leituraDireta('Grep', { pattern: 'x' })).toBe(true)
+    expect(leituraDireta('Glob', { pattern: '*.ts' })).toBe(true)
+    expect(leituraDireta('Bash', { command: 'cat a.txt' })).toBe(true)
+    expect(leituraDireta('Bash', { command: 'cd /srv/app && grep -rn foo .' })).toBe(true)
+    expect(leituraDireta('Bash', { command: 'cd "meu dir" && ls -la' })).toBe(true)
+    expect(leituraDireta('Bash', { command: '  wc -l a b' })).toBe(true)
+  })
+
+  test('leituraDireta deixa de fora o que não é leitura', () => {
+    expect(leituraDireta('Bash', { command: 'git log --oneline' })).toBe(false)
+    expect(leituraDireta('Bash', { command: 'python3 x.py' })).toBe(false)
+    expect(leituraDireta('Bash', { command: 'cd x && npm test' })).toBe(false)
+    expect(leituraDireta('Bash', { command: 'lsof -i' })).toBe(false)
+    expect(leituraDireta('Edit', { file_path: '/x' })).toBe(false)
+    expect(leituraDireta('Bash', {})).toBe(false)
+    expect(leituraDireta('Bash', { command: 'cat > x' })).toBe(false)
+    expect(leituraDireta('Bash', { command: 'sed -i s/a/b/ x' })).toBe(false)
+    expect(leituraDireta('Bash', { command: 'ls && git push' })).toBe(false)
+    expect(leituraDireta('Bash', { command: 'cat x | wc -l' })).toBe(true)
+    expect(leituraDireta('Bash', { command: 'find . -name a -delete' })).toBe(false)
+  })
+
+  test('custoUsd soma pelos preços (conta feita à mão)', () => {
+    // Opus 5.5: 1M entrada (4) + 1M escrita (5) + 10M releitura (0,2 x 10 = 2) + 0,5M saída (20 x 0,5 = 10) = 21
+    // Haiku 5.5: 2M entrada (0,1 x 2 = 0,2) = 0,2
+    // "Modelo X" sem preço não entra.
+    const c = {
+      delegados: 0,
+      modelos: {
+        'Opus 5.5': { novo: 0, releitura: 10_000_000, pedidos: 1, entrada: 1_000_000, escrita: 1_000_000, saida: 500_000 },
+        'Haiku 5.5': { novo: 0, releitura: 0, pedidos: 1, entrada: 2_000_000 },
+        'Modelo X': { novo: 0, releitura: 9_000_000, pedidos: 1, entrada: 9_000_000 },
+      },
+    }
+    expect(Math.round(custoUsd(c) * 1e6)).toBe(21_200_000)
+  })
+
+  test('custoUsd com escrita de 1 hora (conta feita à mão)', () => {
+    // Opus 5.5: 1M escrita de 1 h (8) + 1M escrita de 5 min (5) = 13; Sonnet 5.5: 0,5M de 1 h (4 x 0,5) = 2
+    const c = {
+      delegados: 0,
+      modelos: {
+        'Opus 5.5': { novo: 0, releitura: 0, pedidos: 1, escrita: 1_000_000, escrita1h: 1_000_000 },
+        'Sonnet 5.5': { novo: 0, releitura: 0, pedidos: 1, escrita1h: 500_000 },
+      },
+    }
+    expect(Math.round(custoUsd(c) * 1e6)).toBe(15_000_000)
+  })
+
+  test('dados antigos sem os campos novos contam só a releitura', () => {
+    const antigo = { delegados: 2, modelos: { 'Opus 5.5': { novo: 500, releitura: 1_000_000, pedidos: 3 } } }
+    expect(Math.round(custoUsd(antigo) * 1e6)).toBe(200_000)
+    expect(custoUsd(CONTAS_VAZIAS)).toBe(0)
+  })
+
+  test('somar guarda entrada, saída e escrita sem mudar novo e releitura', () => {
+    const uso = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 }
+    const c = somar(somar(CONTAS_VAZIAS, 'Opus 5.5', uso), 'Opus 5.5', uso)
+    expect(c.modelos['Opus 5.5']).toEqual({ novo: 70, releitura: 200, pedidos: 2, entrada: 20, saida: 10, escrita: 40, escrita1h: 0 })
+    const p = somar(CONTAS_VAZIAS, 'Opus 5.5', uso, true)
+    expect(p.modelos['Opus 5.5']).toMatchObject({ escrita: 0, escrita1h: 20 })
+  })
 })

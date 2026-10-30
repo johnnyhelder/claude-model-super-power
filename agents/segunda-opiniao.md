@@ -1,6 +1,6 @@
 ---
 name: segunda-opiniao
-description: "Sonnet 4.6, uma geração anterior. Segunda opinião independente e barata: reler uma resposta, um texto ou um plano e apontar o que está errado ou confuso. Usar quando vale a pena um olhar de outro modelo, que não partilha os mesmos pontos cegos."
+description: "Sonnet 4.6, uma geração anterior. Segunda opinião independente e barata: reler uma resposta, um texto ou um plano e apontar o que está errado ou confuso. Usar quando vale a pena um olhar de outro modelo, que não compartilha os mesmos pontos cegos."
 tools: Read, Grep, Glob
 model: claude-sonnet-4-6
 ---

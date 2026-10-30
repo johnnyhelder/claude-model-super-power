@@ -116,8 +116,23 @@ export function modeloPara(p: Pedido): string | undefined {
 
 // Contas de tokens, por modelo (Opus, Sonnet, Haiku, Fable...). "novo" é o que o modelo
 // leu ou escreveu pela primeira vez; "releitura" é o histórico relido do cache, bem mais barato.
-export type Linha = { novo: number; releitura: number; pedidos: number }
-export type Contas = { delegados: number; modelos: Readonly<Record<string, Linha>> }
+// "entrada", "saida", "escrita" (cache de 5 min) e "escrita1h" (cache de 1 hora) separam o "novo" para o cálculo de custo; dados
+// gravados antes da 1.1.0 não os têm.
+export type Linha = {
+  novo: number
+  releitura: number
+  pedidos: number
+  entrada?: number
+  saida?: number
+  escrita?: number
+  escrita1h?: number
+}
+export type Contas = {
+  delegados: number
+  modelos: Readonly<Record<string, Linha>>
+  // Leituras diretas (Read, Grep, Glob, cat, grep...) feitas na conversa principal.
+  leituras?: number
+}
 
 export const CONTAS_VAZIAS: Contas = { delegados: 0, modelos: {} }
 
@@ -149,12 +164,17 @@ export function completas(c: Partial<Contas> | undefined): Contas {
   return c !== undefined && c.modelos !== undefined ? { ...CONTAS_VAZIAS, ...c } as Contas : CONTAS_VAZIAS
 }
 
-export function somar(c: Contas, nome: string, u: Uso): Contas {
+// Na conversa principal a escrita de cache é de 1 hora; nos subagentes, de 5 minutos.
+export function somar(c: Contas, nome: string, u: Uso, principal = false): Contas {
   const l = c.modelos[nome] ?? { novo: 0, releitura: 0, pedidos: 0 }
   const linha: Linha = {
     novo: l.novo + u.input_tokens + u.output_tokens + u.cache_creation_input_tokens,
     releitura: l.releitura + u.cache_read_input_tokens,
     pedidos: l.pedidos + 1,
+    entrada: (l.entrada ?? 0) + u.input_tokens,
+    saida: (l.saida ?? 0) + u.output_tokens,
+    escrita: (l.escrita ?? 0) + (principal ? 0 : u.cache_creation_input_tokens),
+    escrita1h: (l.escrita1h ?? 0) + (principal ? u.cache_creation_input_tokens : 0),
   }
   return { ...c, modelos: { ...c.modelos, [nome]: linha } }
 }
@@ -201,4 +221,100 @@ export function modeloPrevisto(p: Pedido & { parentModel: string }, roteado: str
 export function comModelo(descricao: string, modelo: string): string {
   const nome = familia(modelo)
   return descricao.startsWith(`${nome} · `) ? descricao : `${nome} · ${descricao}`
+}
+
+// ---- Maestro obrigatório (1.1.0) ----
+
+// aviso = lembra a cada passo; forte = além disso recusa a leitura direta a partir da 6ª; desligado = nada.
+export type Modo = 'aviso' | 'forte' | 'desligado'
+
+export const AVISO_LEITURAS = 3
+export const TRAVA_LEITURAS = 6
+export const AVISO_PASSOS = 10
+
+// Seção do system prompt que faz da conversa principal o maestro.
+export const TEXTO_MAESTRO = [
+  'Você é o maestro. Esta conversa é o modelo caro e relê todo o contexto a cada passo.',
+  'Delegue:',
+  '- Ler ou procurar em mais de 2 arquivos, logs, sessões ou docs: model-super-power:batedor ou Explore, pedindo só a conclusão.',
+  '- Trabalho já decidido com vários passos (código, scripts, comandos, ssh, renders): model-super-power:executor.',
+  '- Antes de ir para produção: model-super-power:revisor. Texto ou plano importante: model-super-power:segunda-opiniao.',
+  '- Decisão cara de errar: model-super-power:arquiteto, raramente.',
+  'Não delegue:',
+  '- Um arquivo, uma busca, um comando, uma edição pequena: faça aqui.',
+  '- Quando explicar custaria mais do que fazer. O subagente não vê esta conversa; o pedido a ele tem de caber em poucas linhas.',
+  'Evite fork: herda o modelo caro e o contexto todo. O batedor não tem Bash. Decidir, coordenar e falar com o usuário ficam aqui.',
+].join('\n')
+
+// O maestro só vale quando a conversa principal roda num modelo caro (Opus ou Fable).
+export function modeloCaro(modelo: string | undefined): boolean {
+  const nome = familia(modelo)
+  return nome.startsWith('Opus') || nome.startsWith('Fable')
+}
+
+// Comando que só lê ou procura, por ferramenta ou por Bash (após um `cd X &&` opcional).
+const BASH_DE_LEITURA = /^\s*(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)?(?:cat|sed|head|tail|grep|rg|find|ls|wc|jq|awk)(?=\s|$)/
+
+// Escrita, edição no lugar ou encadeamento (depois do `cd X &&` opcional) deixam de ser leitura.
+// `2>/dev/null` e `2>&1` são redirecionamentos de erro e não contam como escrita. O pipe continua a contar.
+export function leituraDireta(tool: string, input: Readonly<Record<string, unknown>>): boolean {
+  if (tool === 'Read' || tool === 'Grep' || tool === 'Glob') return true
+  if (tool !== 'Bash' || typeof input.command !== 'string' || !BASH_DE_LEITURA.test(input.command)) return false
+  const resto = input.command
+    .replace(/^\s*cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*/, '')
+    .replace(/\d?>\s*\/dev\/null|\d>&\d/g, '')
+  return !/>|<<|\bsed\s+(?:-\S+\s+)*-[A-Za-z]*i|-delete\b|-exec\b|&&|;|\|\|/.test(resto)
+}
+
+export function avisoLeituras(n: number): string {
+  return (
+    `model-super-power: ${n} leituras diretas seguidas nesta conversa, que é o modelo mais caro. ` +
+    'Passe a busca ou a leitura ao model-super-power:batedor (ou Explore) e peça só a conclusão.'
+  )
+}
+
+export function avisoPassos(n: number): string {
+  return (
+    `model-super-power: ${n} passos sem delegar. ` +
+    'Trabalho decidido vai para o model-super-power:executor, busca para o model-super-power:batedor.'
+  )
+}
+
+export function recusaLeitura(n: number): string {
+  return (
+    `model-super-power: ${n} leituras diretas sem delegar, leitura recusada. ` +
+    'Chame o model-super-power:batedor (ou Explore) para ler ou procurar e peça só a conclusão. Depois disso a conversa volta a poder ler.'
+  )
+}
+
+// Preços em US$ por milhão de tokens. Fonte: página oficial de preços da Anthropic, 30/10/2026.
+// Escrita de cache de 5 minutos (subagentes) e de 1 hora (conversa principal, 2x a entrada). Modelo que não está aqui não entra na soma.
+const PRECOS: Readonly<Record<string, { entrada: number; escrita: number; escrita1h: number; leitura: number; saida: number }>> = {
+  'Fable 5.1': { entrada: 10, escrita: 12.5, escrita1h: 20, leitura: 0.25, saida: 50 },
+  'Opus 5.5': { entrada: 4, escrita: 5, escrita1h: 8, leitura: 0.2, saida: 20 },
+  'Sonnet 5.5': { entrada: 2, escrita: 2.5, escrita1h: 4, leitura: 0.1, saida: 10 },
+  'Sonnet 4.6': { entrada: 3, escrita: 3.75, escrita1h: 6, leitura: 0.3, saida: 15 },
+  'Haiku 5.5': { entrada: 0.1, escrita: 0.125, escrita1h: 0.2, leitura: 0.01, saida: 0.5 },
+}
+
+// Estimativa do que as contas custariam a preço de API (não é o que você paga na assinatura).
+export function custoUsd(c: Contas): number {
+  let total = 0
+  for (const [nome, l] of Object.entries(c.modelos)) {
+    const p = PRECOS[nome]
+    if (p === undefined) continue
+    total +=
+      ((l.entrada ?? 0) * p.entrada + (l.escrita ?? 0) * p.escrita + (l.escrita1h ?? 0) * p.escrita1h + l.releitura * p.leitura + (l.saida ?? 0) * p.saida) /
+      1_000_000
+  }
+  return total
+}
+
+// "US$ 1,23" (vírgula decimal, como no resto dos textos).
+export function usd(n: number): string {
+  return `US$ ${n.toFixed(2).replace('.', ',')}`
+}
+
+export function maisUmaLeitura(c: Contas): Contas {
+  return { ...c, leituras: (c.leituras ?? 0) + 1 }
 }
