@@ -84,6 +84,23 @@ async function modoEfetivo($: EngineInterface, opcao: unknown): Promise<Modo> {
 // Modelo do último pedido de cada loop ("principal" = a conversa), lido em turn.step.
 const modeloDoLoop = new Map<string, string>()
 
+// Se o texto do maestro já chegou ao modelo nesta vida do módulo (por prompt.compose ou prompt.submit).
+let maestroEntregue = false
+// Se foi o prompt.submit que o entregou (como contexto); aí o prompt.compose não o repete no sistema.
+let viaContexto = false
+
+// O turn.step nem sempre anuncia o modelo da conversa principal: a cada prompt, $.session.model()
+// relê o modelo (pega um /model no meio da sessão) e o turn.step corrige durante o turno.
+async function anotarModelo($: EngineInterface): Promise<string | undefined> {
+  try {
+    const m = await $.session.model()
+    if (m) modeloDoLoop.set('principal', m)
+  } catch {
+    // sem modelo, fica o que o turn.step tiver anotado
+  }
+  return modeloDoLoop.get('principal')
+}
+
 // Papéis que cada modelo já fez nesta sessão (o mesmo modelo pode ser conversa e revisor).
 const papeisDoModelo = new Map<string, Set<string>>()
 
@@ -142,12 +159,14 @@ export const register: Register = (on, options) => {
       }
     }
     return r
-  }).catch(($, e, next) => (next.called ? Promise.reject(new Error('agent.spawn')) : next(e))) // se o roteador falhar antes, o subagente arranca como pedido
+  }).catch(($, e, next) => next(e)) // se o roteador falhar antes, o subagente arranca como pedido; depois, fica o que já arrancou
 
   // 2. Esforço baixo só nos pedidos dos subagentes delegados ao Haiku. O chat principal
   // (sem agentId) passa sempre como veio.
   on('turn.step', async function* ($, e, next) {
-    modeloDoLoop.set(e.agentId ?? 'principal', e.model)
+    if (e.model) {
+      modeloDoLoop.set(e.agentId ?? 'principal', e.model)
+    }
     const ehDelegado =
       e.agentId !== undefined &&
       e.effort !== undefined &&
@@ -161,17 +180,49 @@ export const register: Register = (on, options) => {
     const r = await next(e)
     const fora = ['print', 'bare', 'teammate', 'analysis'].some(t => e.traits.some(x => x === t))
     if (!fora) temAgent = e.tools.includes('Agent')
-    if (fora || !interativa || !e.tools.includes('Agent') || !modeloCaro(e.model) || (await modoEfetivo($, options.maestro)) === 'desligado') return r
+    if (fora || viaContexto || !interativa || !e.tools.includes('Agent') || !modeloCaro(e.model) || (await modoEfetivo($, options.maestro)) === 'desligado') return r
+    maestroEntregue = true
     return { sections: [...r.sections, { id: 'model-super-power:maestro', text: TEXTO_MAESTRO, scope: 'session' as const }] }
   }).catch(($, e, next) => next(e))
 
-  // Um prompt real do usuário recomeça a contagem do maestro (não as mensagens internas nem os comandos).
-  on('prompt.submit', ($, e, next) => {
-    if (['composer', 'bridge', 'scheduled-trigger'].includes(e.origin.kind)) {
-      leituras = 0
-      passos = 0
+  // Um prompt real do usuário (comandos incluídos) recomeça a contagem do maestro; as mensagens internas não.
+  // Também anota o modelo da conversa (o turn.step pode não o anunciar) e, se o prompt.compose não
+  // chegou a correr (um plugin de tier acima o pula), entrega o texto do maestro uma vez como contexto.
+  on('prompt.submit', async ($, e, next) => {
+    // 'sdk' é o prompt do usuário no app desktop/VS Code (o host é o SDK); num -p puro não há superfície.
+    if (!['composer', 'bridge', 'scheduled-trigger', 'sdk'].includes(e.origin.kind)) return next(e)
+    leituras = 0
+    passos = 0
+    // Tarefa agendada ou /loop: recomeça a contagem, mas não é uma pessoa no prompt.
+    const humano = e.origin.kind !== 'scheduled-trigger'
+    // O app desktop roda a sessão pelo SDK (isInteractive=false), mas há uma pessoa no prompt. Sessão
+    // aberta em segundo plano (card, outra sessão) chega sem superfície ligada: o entrypoint do app basta.
+    // shortcut: um `claude -p` lançado de dentro do app herda CLAUDE_CODE_ENTRYPOINT e também recebe o maestro; trocar por um sinal próprio do app se isso incomodar.
+    if (humano && !interativa && ((await $.session.surfaces()).length > 0 || (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-desktop')) interativa = true
+    const modelo = await anotarModelo($)
+    // Comando (/model, /super-power...) não gasta a única entrega. shortcut: uma skill chamada por
+    // comando também chega ao modelo e fica sem o maestro nesse prompt; a API não distingue os dois.
+    if (!humano || e.command || maestroEntregue || !interativa || temAgent === false || !modeloCaro(modelo) || (await modoEfetivo($, options.maestro)) === 'desligado') return next(e)
+    maestroEntregue = true
+    viaContexto = true
+    const r = await next({ ...e, context: [...(e.context ?? []), TEXTO_MAESTRO] })
+    // Prompt recusado (hook abaixo, Stop, limite): o maestro não entrou, o próximo prompt entrega.
+    if (r.drop !== undefined) {
+      maestroEntregue = false
+      viaContexto = false
     }
-    return next(e)
+    return r
+  }).catch(($, e, next) => next(e)) // no catch o next é replay-safe: nunca roda o resto duas vezes
+
+  // A compactação apaga o contexto entregue no prompt.submit: o próximo prompt entrega de novo.
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    // 'precompute' só prepara o resumo, não troca a conversa: o maestro continua lá.
+    if (e.agentId === undefined && e.trigger !== 'precompute' && viaContexto && r.skip === undefined) {
+      maestroEntregue = false
+      viaContexto = false
+    }
+    return r
   })
 
   // 3. Guarda de caminhos, só dentro de subagentes. Na conversa principal, o maestro obrigatório.
@@ -227,7 +278,7 @@ export const register: Register = (on, options) => {
     const uso = e.usage
     if (uso !== undefined) {
       const delegado = (await read($, delegados)).find(d => d.id === e.agentId)?.modelo
-      const nome = familia(modeloDoLoop.get(e.agentId ?? 'principal') ?? delegado)
+      const nome = familia(uso.model || modeloDoLoop.get(e.agentId ?? 'principal') || delegado)
       const principal = e.agentId === undefined
       await update($, contas, c => somar(completas(c), nome, uso, principal))
       await somarSemana($, c => somar(c, nome, uso, principal))
@@ -240,9 +291,29 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // Conversa nova: nada da anterior vale (a superfície, `interativa`, e as ferramentas, `temAgent`,
+  // continuam as mesmas: o /clear não tira o Agent de quem não o tinha).
+  const recomecar = () => {
+    maestroEntregue = false
+    viaContexto = false
+    modeloDoLoop.clear()
+    papeisDoModelo.clear()
+    leituras = 0
+    passos = 0
+  }
+
+  // /clear e resume trocam de conversa no mesmo processo sem session.start: só o session.end avisa.
+  on('session.end', ($, e, next) => {
+    if (e.reason === 'clear' || e.reason === 'resume') recomecar()
+    return next(e)
+  })
+
   // 5. Comando /super-power.
   on('session.start', async ($, e, next) => {
+    // Primeira carga do processo ou recarga do mod.
     interativa = e.isInteractive
+    recomecar()
+    await anotarModelo($)
     await $.command.register({
       name: 'super-power',
       description: 'model-super-power: estado, contas, regras, modo, on/off',
